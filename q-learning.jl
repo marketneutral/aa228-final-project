@@ -1,49 +1,54 @@
-using POMDPs
-using POMDPModelTools: Deterministic
 using Random
 using Plots
 using LinearAlgebra: dot, norm
 
 struct GridWorldState
-    x::Int64
-    y::Int64
+    i::Int64
+    j::Int64
     done::Bool
 end
 
-struct GridWorld <: POMDPs.MDP{GridWorldState, Symbol}
-    size_x::Int64
-    size_y::Int64
+struct GridWorld
+    size_i::Int64
+    size_j::Int64
     reward_goal::Float64
     reward_penalty::Float64
     penalty_zone::Tuple{Int64, Int64}
 end
 
-POMDPs.actions(::GridWorld) = [:up, :down, :left, :right]
-POMDPs.states(mdp::GridWorld) = [GridWorldState(x, y, false) for x in 1:mdp.size_x, y in 1:mdp.size_y]
-POMDPs.initialstate(mdp::GridWorld) = GridWorldState(1, 1, false)
+gridworld = GridWorld(5, 5, 100.0, -100.0, (3, 3))
+actions = [:up, :down, :left, :right]
+states = [GridWorldState(i, j, false) for i in 1:gridworld.size_i, j in 1:gridworld.size_j]
+initialstate = GridWorldState(1, 1, false)
 
-function POMDPs.gen(m::GridWorld, s::GridWorldState, a::Symbol) #, rng::AbstractRNG)
-    if s.done
-        return (sp=s, r=0.0)
-    end
+function gen(m::GridWorld, s::GridWorldState, a::Symbol) #, rng::AbstractRNG)
+    # if s.done
+    #     return (sp=s, r=0.0)
+    # end
 
-    x = s.x
-    y = s.y
+    i = s.i
+    j = s.j
 
-    if a == :up
-        y = min(y+1, m.size_y)
-    elseif a == :down
-        y = max(y-1, 1)
+    if a == :down
+        i = min(i+1, m.size_i) # stay in the grid 
+    elseif a == :up
+        i = max(i-1, 1)
     elseif a == :left
-        x = max(x-1, 1)
+        j = max(j-1, 1)
     elseif a == :right
-        x = min(x+1, m.size_x)
+        j = min(j+1, m.size_j)
     end
 
-    done = (x == m.size_x) && (y == m.size_y)
-    reward = done ? m.reward_goal : (x == m.penalty_zone[1] && y == m.penalty_zone[2] ? m.reward_penalty : -1.0)
+    done = (i == m.size_i) && (j == m.size_j)
+    reward = done ? m.reward_goal : (i == m.penalty_zone[1] && j == m.penalty_zone[2] ? m.reward_penalty : -1.0)
 
-    return (sp=GridWorldState(x, y, done), r=reward)
+    # stay in place if hit the obstacle
+    if (i == m.penalty_zone[1] && j == m.penalty_zone[2])
+        i = s.i
+        j = s.j
+    end
+
+    return (sp=GridWorldState(i, j, done), r=reward)
 end
 
 
@@ -56,29 +61,8 @@ mutable struct QLearning
 end
 
 
-function state_to_index(state::GridWorldState, size_x::Int64, size_y::Int64)
-    return (state.y - 1) * size_x + state.x
-end
-
-function action_to_index(action::Symbol)
-    return Dict(:up => 1, :down => 2, :left => 3, :right => 4)[action]
-end
-
-function index_to_action(index::Int64)
-    return [:up, :down, :left, :right][index]
-end
-
-function index_to_state(index::Int64, size_x::Int64, size_y::Int64)
-    y = div(index - 1, size_x) + 1
-    x = index - (y - 1) * size_x
-    return GridWorldState(x, y, false)
-end
-
-
 function lookahead(model::QLearning, s, a)
-    idx_state = state_to_index(s, 5, 5)
-    idx_action = action_to_index(a)
-    return model.Q[idx_state, idx_action]
+    return model.Q[((s.i, s.j), a)]
 end
 
 
@@ -87,42 +71,57 @@ mutable struct EpsilonGreedyExploration
     epsilon # probability of random action
 end
 
+function valid_actions(state::GridWorldState)
+    i, j = state.i, state.j
+    valid = []
+    if i > 1 push!(valid, :up) end
+    if i < 5 push!(valid, :down) end
+    if j > 1 push!(valid, :left) end
+    if j < 5 push!(valid, :right) end
+    return valid
+end
 
 # Define the epsilon-greedy policy
 function π(model, s, exploration::EpsilonGreedyExploration)
+    valids = valid_actions(s)
     if rand() < exploration.epsilon
-        return rand(POMDPs.actions(gridworld)) # Explore: take a random action
+        return rand(valids) # Explore: take a random action
     else
-        values = [lookahead(model, s, a) for a in POMDPs.actions(gridworld)]
-        return POMDPs.actions(gridworld)[argmax(values)] # Exploit: take the best action
+        values = [lookahead(model, s, a) for a in valids]
+        return valids[argmax(values)] # Exploit: take the best action
     end
 end
 
 # Greedy policy
 function π(model, s)
-    values = [lookahead(model, s, a) for a in POMDPs.actions(gridworld)]
-    return POMDPs.actions(gridworld)[argmax(values)]
+    values = [lookahead(model, s, a) for a in actions]
+    return actions[argmax(values)]
 end
 
 
 function update!(model::QLearning, s, a, r, s_prime)
     gamma, Q, alpha = model.gamma, model.Q, model.alpha
-    idx_state = state_to_index(s, 5, 5)
-    idx_action = action_to_index(a)
-    idx_state_prime = state_to_index(s_prime, 5, 5)
 
-    Q[idx_state, idx_action] += alpha*(r + gamma*maximum(Q[idx_state_prime,:]) - Q[idx_state, idx_action])
+    # the update should only look at valid actions in s_prime
+    valid_s_prime_actions = valid_actions(s_prime)
+
+    # Q[((s.i, s.j), a)] +=
+    #     alpha*(
+    #         r + gamma*maximum(Q[((s_prime.i, s_prime.j), a_prime)] for a_prime in valid_s_prime_actions)
+    #         - Q[((s.i, s.j), a)]
+    #     )
+
+    Q[((s.i, s.j), a)] = (1-alpha)*Q[((s.i, s.j), a)] + alpha*(r + gamma*maximum(Q[((s_prime.i, s_prime.j), a_prime)] for a_prime in valid_s_prime_actions))
     return model
 end
 
 
 
 # h is the horizon
-
-function simulate(P::MDP, model, π, h, s)
+function simulate(P, model, π, h, s)
     for i in 1:h
         a = π(model, s)
-        s_prime, r = POMDPs.gen(P, s, a) #, rng)
+        s_prime, r = gen(P, s, a)
         update!(model, s, a, r, s_prime)
         s = s_prime
     end
@@ -130,45 +129,52 @@ end
 
 
 # Initialize the gridworld
-gridworld = GridWorld(5, 5, 10.0, -10.0, (3, 3))
-n_states = length(POMDPs.states(gridworld))
-n_actions = length(POMDPs.actions(gridworld))
-Q = zeros(n_states, n_actions)
-
-model = QLearning(1:n_states, 1:n_actions, 0.95, Q, 0.5)
-
-exploration = EpsilonGreedyExploration(0.1)
-
-s = POMDPs.initialstate(gridworld)
-
-# simulate fuction
-simulate(gridworld, model, (m, s) -> π(m, s, exploration), 100_000, s)
-
-
-# show the Q function values across a grid
-function print_Q_table(model)
-    Q_table = zeros(25, 4);
-    for i in 1:25
-        for j in 1:4
-            a = index_to_action(j)
-            s = index_to_state(i, 5, 5)
-            Q_table[i, j] = lookahead(model, s, a)
-        end
+Q = Dict{Tuple{Tuple{Int64, Int64}, Symbol}, Float64}()
+for s in states
+    for a in actions
+        Q[((s.i, s.j), a)] = 0.0
     end
-    return Q_table
 end
 
-# show the optimal action for each state
-function print_optimal_policy(model)
-    policy = zeros(25, 1);
-    for i in 1:25
-        values = [lookahead(model, index_to_state(i, 5, 5), a) for a in POMDPs.actions(gridworld)]
-        policy[i] = argmax(values)
+alpha = 0.1
+
+model = QLearning(states, actions, 0.90, Q, alpha)
+
+exploration = EpsilonGreedyExploration(0.1)
+s = initialstate
+
+# simulate fuction
+simulate(gridworld, model, (m, s) -> π(m, s, exploration), 1_000, s)
+
+
+# loop over all states and print the optimal policy
+function get_optimal_policy(model)
+    policy = Dict{GridWorldState, Symbol}()
+    for s in states
+        valids = valid_actions(s)
+        a = valids[argmax(model.Q[((s.i, s.j), a)] for a in valids)]
+        policy[s] = a
     end
     return policy
 end
 
-print_optimal_policy(model)
+get_optimal_policy(model)
+
+# print grid of optimal actions
+function print_grid(model)
+    grid = fill(" ", 5, 5)
+    policy = get_optimal_policy(model)
+    for s in states
+        grid[s.i, s.j] = string(policy[s])
+    end
+    return grid  # Display the first letter of the optimal action
+end
+
+print_grid(model)
+
+
+
+
 
 # Gradient-based Q-learning
 
@@ -177,7 +183,7 @@ struct GradientQLearning
     gamma # discount
     Q # parameterized action value function Q(theta,s,a)
     grad_Q # gradient of action value function
-    theta # action value function parameter
+    theta # action value function parameters
     alpha # learning rate
     lambda # regularization parameter
 end
@@ -201,7 +207,7 @@ end
 #basis(s, a) = [s.x, s.y, s.x*s.y, s.x^2, s.y^2, a == :up, a == :down, a == :left, a == :right]
 
 function basis(s, a)
-    state_features = [s.x, s.y, s.x*s.y, s.x^2, s.y^2]
+    state_features = [s.x, s.y, 5 - s.x, 5 - s.y, s.x*s.y, s.x^2, s.y^2]
     action_features = [a == :up, a == :down, a == :left, a == :right]
     # all combinations of state and action features
     combs =  [s_f * a_f for s_f in state_features, a_f in action_features]
@@ -217,16 +223,16 @@ Q_func(θ, s, a) = dot(θ, basis(s, a))
 grad_Q_func(θ, s, a) = basis(s, a)
 
 # intialize the theta vector with unform random values between -1 and 1
-θ = 2 .* rand(29) .- 1
-alpha = 0.5
-lambda = 0.0
+θ = 2 .* rand(39) .- 1
+alpha = 0.05
+lambda = 0.05
 
 model_gql = GradientQLearning(1:n_actions, 0.95, Q_func, grad_Q_func, θ, alpha, lambda)
 
-simulate(gridworld, model_gql, (m, s) -> π(m, s, exploration), 200_000, s)
+simulate(gridworld, model_gql, (m, s) -> π(m, s, exploration), 500_000, s)
 
 #print_Q_table(model_gql)
-print_optimal_policy(model_gql)
+print_grid(model_gql)
 
 
 
@@ -240,7 +246,7 @@ function visualize_gridworld(gridworld::GridWorld, state::GridWorldState)
     grid[gridworld.size_x, gridworld.size_y] = "G"
     grid[state.x, state.y] = "A"
     
-    plot = heatmap(grid, yflip = true, colorbar = false)
+    plot = heatmap(grid, yflip = false, colorbar = false)
     plot
 end
 
