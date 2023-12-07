@@ -17,14 +17,16 @@ function lookahead(model::GradientQLearning, s, a)
     return model.Q(model.theta, s, a)
 end
 
+
 function update!(model::GradientQLearning, s, a, r, s_prime)
     A, gamma, Q, theta, alpha, lambda = 
         model.A, model.gamma, model.Q, model.theta, model.alpha, model.lambda
     u = maximum(Q(θ, s_prime, a_prime) for a_prime in A)
-    Δ = (r + gamma*u - Q(theta, s, a)) * model.grad_Q(theta, s, a)
-    theta[:] += alpha*(scale_gradient(Δ, 1) - lambda*theta)
+    Δ = (r + gamma*u - Q(theta, s, a)) * model.grad_Q(theta, s, a) - lambda*theta
+    theta[:] += alpha*scale_gradient(Δ, 1)
     return model
 end
+
 
 function simulate(model, π, h, s)
     for i in 1:h
@@ -43,7 +45,7 @@ end
 function π(::GradientQLearning, s, exploration::EpsilonGreedyExploration)
     A = model.A
     if rand() < exploration.epsilon
-        return rand(A) # Explore: take a random action
+        return rand(A) # Explore: take a random action; constrain to valid actions
     else
         values = [lookahead(model, s, a) for a in A]
         return A[argmax(values)] # Exploit: take the best action

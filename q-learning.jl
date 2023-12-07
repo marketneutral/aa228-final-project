@@ -198,8 +198,8 @@ function update!(model::GradientQLearning, s, a, r, s_prime)
     A, gamma, Q, theta, alpha, lambda = 
         model.A, model.gamma, model.Q, model.theta, model.alpha, model.lambda
     u = maximum(Q(θ, s_prime, a_prime) for a_prime in A)
-    Δ = (r + gamma*u - Q(theta, s, a)) * model.grad_Q(theta, s, a)
-    theta[:] += alpha*(scale_gradient(Δ, 1) - lambda*theta)
+    Δ = (r + gamma*u - Q(theta, s, a)) * model.grad_Q(theta, s, a) - lambda*theta
+    theta[:] += alpha*scale_gradient(Δ, 1)
     return model
 end
 
@@ -207,7 +207,7 @@ end
 #basis(s, a) = [s.x, s.y, s.x*s.y, s.x^2, s.y^2, a == :up, a == :down, a == :left, a == :right]
 
 function basis(s, a)
-    state_features = [s.x, s.y, 5 - s.x, 5 - s.y, s.x*s.y, s.x^2, s.y^2]
+    state_features = [s.i, s.j, 5 - s.i, 5 - s.j, s.i*s.j, s.i^2, s.j^2]
     action_features = [a == :up, a == :down, a == :left, a == :right]
     # all combinations of state and action features
     combs =  [s_f * a_f for s_f in state_features, a_f in action_features]
@@ -227,15 +227,19 @@ grad_Q_func(θ, s, a) = basis(s, a)
 alpha = 0.05
 lambda = 0.05
 
-model_gql = GradientQLearning(1:n_actions, 0.95, Q_func, grad_Q_func, θ, alpha, lambda)
+model_gql = GradientQLearning(actions, 0.95, Q_func, grad_Q_func, θ, alpha, lambda)
 
-simulate(gridworld, model_gql, (m, s) -> π(m, s, exploration), 500_000, s)
+simulate(gridworld, model_gql, (m, s) -> π(m, s, exploration), 100_000, s)
 
 #print_Q_table(model_gql)
-print_grid(model_gql)
+# print_grid(model_gql)
 
 
-
+function get_optimal_action(model, s)
+    state = GridWorldState(s[1], s[2], false)
+    a = actions[argmax(model.Q(model.theta, state, a) for a in actions)]
+    return a
+end
 
 # Vizualization
 
