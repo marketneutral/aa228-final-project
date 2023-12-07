@@ -98,6 +98,13 @@ function π(model, s, exploration::EpsilonGreedyExploration)
     end
 end
 
+# Greedy policy
+function π(model, s)
+    values = [lookahead(model, s, a) for a in POMDPs.actions(gridworld)]
+    return POMDPs.actions(gridworld)[argmax(values)]
+end
+
+
 function update!(model::QLearning, s, a, r, s_prime)
     gamma, Q, alpha = model.gamma, model.Q, model.alpha
     idx_state = state_to_index(s, 5, 5)
@@ -161,7 +168,7 @@ function print_optimal_policy(model)
     return policy
 end
 
-
+print_optimal_policy(model)
 
 # Gradient-based Q-learning
 
@@ -172,6 +179,7 @@ struct GradientQLearning
     grad_Q # gradient of action value function
     theta # action value function parameter
     alpha # learning rate
+    lambda # regularization parameter
 end
 
 scale_gradient(∇, L2_max) = min(L2_max/norm(∇), 1)*∇
@@ -181,10 +189,11 @@ function lookahead(model::GradientQLearning, s, a)
 end
 
 function update!(model::GradientQLearning, s, a, r, s_prime)
-    A, gamma, Q, theta, alpha = model.A, model.gamma, model.Q, model.theta, model.alpha
+    A, gamma, Q, theta, alpha, lambda = 
+        model.A, model.gamma, model.Q, model.theta, model.alpha, model.lambda
     u = maximum(Q(θ, s_prime, a_prime) for a_prime in A)
     Δ = (r + gamma*u - Q(theta, s, a)) * model.grad_Q(theta, s, a)
-    theta[:] += alpha*scale_gradient(Δ, 1)
+    theta[:] += alpha*(scale_gradient(Δ, 1) - lambda*theta)
     return model
 end
 
@@ -210,10 +219,11 @@ grad_Q_func(θ, s, a) = basis(s, a)
 # intialize the theta vector with unform random values between -1 and 1
 θ = 2 .* rand(29) .- 1
 alpha = 0.5
+lambda = 0.0
 
-model_gql = GradientQLearning(1:n_actions, 0.95, Q_func, grad_Q_func, θ, alpha)
+model_gql = GradientQLearning(1:n_actions, 0.95, Q_func, grad_Q_func, θ, alpha, lambda)
 
-simulate(gridworld, model_gql, (m, s) -> π(m, s, exploration), 100_000, s)
+simulate(gridworld, model_gql, (m, s) -> π(m, s, exploration), 200_000, s)
 
 #print_Q_table(model_gql)
 print_optimal_policy(model_gql)
