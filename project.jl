@@ -1,3 +1,4 @@
+using DelimitedFiles
 using LinearAlgebra
 using Plots
 using ProgressBars
@@ -35,6 +36,7 @@ mutable struct investment_pool
     bonds::Float64
     stocks::Float64
     private_investments::Array{private_investment,1}
+    total_uncalled::Float64
     max_wealth::Float64
     max_drawdown::Float64
     is_bankrupt::Bool
@@ -43,7 +45,7 @@ mutable struct investment_pool
 
     # Define a constructor with default values
     investment_pool() = new(
-        1, 240, 100., 100., 40, 60, private_investment[], 100, 0, false, 0, 0
+        1, 240, 100., 100., 40, 60, private_investment[], 0, 100, 0, false, 0, 0
     )
 end
 
@@ -111,6 +113,7 @@ function step!(pool::investment_pool, mp::market_parameters)
                 pool.bonds += dist
             end
         end
+        pool.total_uncalled = sum([x.committed - x.called for x in pool.private_investments])
     end
     
     # calculate total wealth
@@ -148,16 +151,12 @@ end
 
 function commit!(pool::investment_pool, amount::Float64)
     # Commit to the private investment
+    if amount > pool.bonds
+        amount = pool.bonds
+    end
     push!(pool.private_investments, private_investment(amount))
 end
 
-
-action_space = [
-    :do_nothing,
-    :buy_stocks_5,
-    :sell_stocks_5,
-    :commit_5,
-]
 
 
 function generate(s::investment_pool, a, mp::market_parameters)
@@ -166,9 +165,9 @@ function generate(s::investment_pool, a, mp::market_parameters)
 
     s_prime = deepcopy(s)
 
+    # end of game! 
     if s_prime.time_step == s_prime.horizon
-        # println("End of horizon!")
-        r = s_prime.total_wealth  - 100
+        r = s_prime.total_wealth - 100
         r = r - 100 * s_prime.max_drawdown
         return s_prime, r
     end
@@ -195,17 +194,18 @@ function generate(s::investment_pool, a, mp::market_parameters)
     step!(s_prime, mp)
 
     r = s_prime.total_wealth - s.total_wealth
+
     if (s_prime.total_wealth < 0) || (s_prime.bonds < 0)
         s_prime.is_bankrupt = true
-        r = r - 1000
+        r = r - 100_000
         return s_prime, r
     end
 
     # add neg reward for being in a drawdown 
     current_drawdown = (s_prime.max_wealth - s_prime.total_wealth) / s_prime.max_wealth
-    r = r - 10 * current_drawdown
     max_drawdown = max(s_prime.max_drawdown, current_drawdown)
     s_prime.max_drawdown = max_drawdown
+    r = r + s_prime.total_wealth  - s.total_wealth
 
     return s_prime, r
 end
@@ -389,19 +389,22 @@ paths = run_many_paths(model, S, π, mp, 100);
 # Summarize path results
 #------------------------------------------------------------
 
-avg_wealth = mean([x.total_wealth for x in paths])
-wealth_90 = quantile([x.total_wealth for x in paths], 0.9)
-wealth_10 = quantile([x.total_wealth for x in paths], 0.1)
-avg_max_drawdown = mean([x.max_drawdown for x in paths])
-avg_spent = mean([x.spent for x in paths])
+function summarize_many_paths(paths)
+    avg_wealth = mean([x.total_wealth for x in paths])
+    wealth_90 = quantile([x.total_wealth for x in paths], 0.9)
+    wealth_10 = quantile([x.total_wealth for x in paths], 0.1)
+    avg_max_drawdown = mean([x.max_drawdown for x in paths])
+    avg_spent = mean([x.spent for x in paths])
 
-df = DataFrame(
-    metric = ["Average Wealth", "Wealth 90th Percentile", "Wealth 10th Percentile", "Average Max Drawdown", "Average Spent"],
-    baseline = [avg_wealth, wealth_90, wealth_10, avg_max_drawdown, avg_spent],
-)
+    df = DataFrame(
+        metric = ["Average Wealth", "Wealth 90th Percentile", "Wealth 10th Percentile", "Average Max Drawdown", "Average Spent"],
+        baseline = [avg_wealth, wealth_90, wealth_10, avg_max_drawdown, avg_spent],
+    )
 
-pretty_table(df, header=["Metric", "Baseline"])
+    pretty_table(df, header=["Metric", "Baseline"])
+end
 
+summarize_many_paths(paths)
 
 
 #------------------------------------------------------------
@@ -437,13 +440,25 @@ end
 
 function simulate(model, π, s, gen_func)
     h = s.horizon
+    per_step_evolution = []
+    per_step_reward = []
+    push!(per_step_evolution, deepcopy(s))
     for i in 1:h
         a = π(model, s)
         s_prime, r = gen_func(s, a)
         update!(model, s, a, r, s_prime)
         s = s_prime
+        push!(per_step_evolution, deepcopy(s))
+        push!(per_step_reward, r)
+        if s.is_bankrupt
+            break
+        end
     end
+    return per_step_evolution, per_step_reward
 end
+
+
+
 
 mutable struct EpsilonGreedyExploration
     epsilon # probability of random action
@@ -453,11 +468,12 @@ end
 function π(model::GradientQLearning, s, exploration::EpsilonGreedyExploration)
     A = model.A
     if rand() < exploration.epsilon
-        return rand(A) # Explore: take a random action; constrain to valid actions
+        action = rand(A)
     else
         values = [lookahead(model, s, a) for a in A]
-        return A[argmax(values)] # Exploit: take the best action
+        action = A[argmax(values)] # Exploit: take the best action
     end
+    return action
 end
 
 
@@ -474,6 +490,7 @@ total_wealth::Float64
 bonds::Float64
 stocks::Float64
 private_investments::Array{private_investment,1}
+total_uncalled::Float64
 max_wealth::Float64
 max_drawdown::Float64
 is_bankrupt::Bool
@@ -482,18 +499,33 @@ distributed::Float64
 """
 
 
+action_space = [
+    :do_nothing,
+    :buy_stocks_5,
+    :sell_stocks_5,
+#    :commit_5,
+]
+
 
 function basis(s, a)
-    bias = [1.0]  # do we need this?
-
     # basic features
+
+    # Applying the cosine transformation to capture periodicity
+    cosine_transform = cos((2.0 * pi / 12) * (s.time_step .- 12))
+    sin_transform = sin((2.0 * pi / 12) * (s.time_step .- 12))
+
+    bonds_pct = s.bonds / s.total_wealth
+
     state_features = [
-        s.time_step/s.horizon,
         (s.total_wealth/s.begin_wealth) - 1,
         s.stocks/s.total_wealth,
-        s.bonds/s.total_wealth,
+        bonds_pct,
+        s.total_uncalled/s.total_wealth,
+        s.total_uncalled/s.bonds,
         (s.total_wealth - s.stocks - s.bonds)/s.total_wealth,
-        s.max_drawdown
+        s.max_drawdown,
+        cosine_transform,
+        sin_transform,
     ]
 
     # polynomial features
@@ -501,30 +533,32 @@ function basis(s, a)
     p3 = [s_f^3 for s_f in state_features]
     p4 = [s_f^4 for s_f in state_features]
 
-    state_features = vcat(state_features, p2, p3, p4)
+    state_features = vcat(bonds_pct < 0.10, state_features, p2, p3, p4)
     
     action_OHE_features = [a == action for action in action_space]
 
     # all combinations of state and action features
     combs =  [s_f * a_f for s_f in state_features, a_f in action_OHE_features]
 
-    # 101 elements
-    return vcat(bias, action_OHE_features, combs[:])
+    return vcat(action_OHE_features, combs[:])
 end
 
-
-exploration = EpsilonGreedyExploration(0.1)
 
 Q_func(θ, s, a) = dot(θ, basis(s, a))
 grad_Q_func(θ, s, a) = basis(s, a)
 
-θ = 2 .* rand(101) .- 1 ;
+s = investment_pool()
+bf = basis(s, :do_nothing);
+n_features = length(bf)
+
+θ = 2 .* (rand(n_features) .- 0.5);
 alpha = 0.1
-lambda = 0.15
+lambda = 0.05
+
 
 model_gql = GradientQLearning(
     action_space,
-    0.95,
+    0.999,
     Q_func,
     grad_Q_func,
     θ,
@@ -532,5 +566,48 @@ model_gql = GradientQLearning(
     lambda
 )
 
+exploration = EpsilonGreedyExploration(0.2)
+
 s = investment_pool()
-simulate(model_gql, (m, s) -> π(m, s, exploration), s, (s, a) -> generate(s, a, mp))
+one_path_gql, rewards = simulate(model_gql, (m, s) -> π(m, s, exploration), s, (s, a) -> generate(s, a, mp));
+plot_one_path(one_path_gql)
+plot(rewards, label = "Reward", title = "Single Path", xlabel = "Months", ylabel = "Reward")
+
+
+terminal_states = []
+rewards_lengths = []
+thetas = []
+push!(thetas, deepcopy(model_gql.theta))
+for i in ProgressBar(1:10_000)
+    s = investment_pool()
+    one_path, rewards = simulate(model_gql, (m, s) -> π(m, s, exploration), s, (s, a) -> generate(s, a, mp));
+    if i % 250 == 0
+        push!(terminal_states, deepcopy(one_path[end]))
+        push!(rewards_lengths, length(rewards))    
+    end
+    if i % 2500 == 0
+        # save checkpoint
+        writedlm("theta_checkpoint_$i.csv", model_gql.theta, ',')
+        push!(thetas, deepcopy(model_gql.theta))
+    end
+end
+
+plot(rewards_lengths, legend=false, title = "Time Before Bankrupcy", xlabel = "Record", ylabel = "Reward")
+# write theta vector to file
+writedlm("theta.csv", model_gql.theta, ',')
+
+# plot thetas
+plot([norm(x) for x in diff(thetas)], legend=false, title = "diff(thetas) Norm", xlabel = "Record", ylabel = "Norm")
+
+
+# lets look at the q-values for each action for a given state
+s = one_path[1];
+Q_values = [lookahead(model_gql, s, a) for a in action_space]
+
+S = investment_pool()
+greedy = EpsilonGreedyExploration(0.0)
+path = run_one_path(model_gql, S, (m, s) -> π(m, s, greedy), mp);
+plot_one_path(path)
+
+paths = run_many_paths(model_gql, S, (m, s) -> π(m, s, greedy), mp, 500);
+summarize_many_paths(paths)
