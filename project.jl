@@ -1,8 +1,11 @@
 using Plots
 using ProgressBars
 import Random
+using Statistics
+using DataFrames
+using PrettyTables
 
-Random.seed!(17)
+default(dpi = 300)
 
 # -----------------------------------------------------------------
 # Problem domain defintion
@@ -19,11 +22,37 @@ mutable struct private_investment
     bow::Float64
     is_alive::Bool
     private_investment(committed::Float64) = 
-        new(committed, 0.0, 0.0, 0.0, 0, 120, 0.25, 3, true)
+        new(committed, 0.0, 0.0, 0.0, 0, 144, 0.40, 2, true)
 end
+
+
+# function step!(pri_inv::private_investment, g)
+#     uncalled = pri_inv.committed - pri_inv.called
+#     if pri_inv.age == 0 || pri_inv.age % 11 == 0
+#         call = (pri_inv.rate_of_contrib) * uncalled
+#     else
+#         call = 0
+#     end
+#     #call = (pri_inv.rate_of_contrib/12) * uncalled
+#     rd = ((pri_inv.age-1)/(pri_inv.max_age))^pri_inv.bow
+#     dist = rd * (pri_inv.nav * (1 + g))
+#     pri_inv.distributed += dist
+
+#     pri_inv.called += call
+#     pri_inv.nav = pri_inv.nav * (1 + g) + call - dist
+#     pri_inv.age += 1
+# end
+
+# pri_inv = private_investment(100.)
+# for i in 1:144
+#     step!(pri_inv, 0.2/12)
+# end
+# pri_inv
 
 mutable struct investment_pool
     time_step::Int64
+    horizon::Int64
+    begin_wealth::Float64
     total_wealth::Float64
     bonds::Float64
     stocks::Float64
@@ -33,8 +62,11 @@ mutable struct investment_pool
     is_bankrupt::Bool
     spent::Float64
     distributed::Float64
+
     # Define a constructor with default values
-    investment_pool() = new(1, 100., 40, 60, private_investment[], 100, 0, false, 0, 0)
+    investment_pool() = new(
+        1, 240, 100., 100., 40, 60, private_investment[], 100, 0, false, 0, 0
+    )
 end
 
 struct market_parameters
@@ -51,7 +83,7 @@ end
 function step!(pool::investment_pool, mp::market_parameters)
     # make the spending distribution
     spending = pool.total_wealth * mp.spending_rate/12
-    pool.spent = spending
+    pool.spent += spending
     pool.bonds -= spending
     
     # Step the bonds forward
@@ -63,7 +95,7 @@ function step!(pool::investment_pool, mp::market_parameters)
     # Step the private investments forward
     if !isempty(pool.private_investments)
         dist = 0
-        for i in length(pool.private_investments):-1:1
+        for i in 1:length(pool.private_investments)
             if pool.private_investments[i].age >= pool.private_investments[i].max_age
                 # distribute the remaining nav
                 pool.bonds += pool.private_investments[i].nav
@@ -71,30 +103,36 @@ function step!(pool::investment_pool, mp::market_parameters)
                 pool.private_investments[i].nav = 0
                 pool.private_investments[i].is_alive = false
             else
-                pool.private_investments[i].age += 1
-                # Step the private investment forward
+                pri_inv = pool.private_investments[i]
+   
+                uncalled = pri_inv.committed - pri_inv.called
+                if pri_inv.age == 0 || pri_inv.age % 11 == 0
+                    call = (pri_inv.rate_of_contrib) * uncalled
+                else
+                    call = 0
+                end
+
                 priv_fund_alpha_return = 
                     mp.privates_expected_alpha/12 +
                     (mp.privates_idiosyncratic_volatility/sqrt(12))*randn()
-                pool.private_investments[i].nav *= (1 + mp.privates_beta*stock_return + priv_fund_alpha_return)
+                g = priv_fund_alpha_return + mp.privates_beta*stock_return
+
+                #g = 0.12/12
 
                 # make distributions
-                rd = (pool.private_investments[i].age/(pool.private_investments[i].max_age))^pool.private_investments[i].bow
-                dist = rd * pool.private_investments[i].nav
-                pool.private_investments[i].distributed += dist
-                pool.bonds += dist
-                dist += dist
+                rd = ((pri_inv.age-1)/(pri_inv.max_age))^pri_inv.bow
+                dist = rd * (pri_inv.nav * (1 + g))
+                pri_inv.distributed += dist
 
-                # make calls
-                uncalled = pool.private_investments[i].committed - pool.private_investments[i].called
-                call = (pool.private_investments[i].rate_of_contrib/12) * uncalled
-                pool.private_investments[i].called += call
+                pri_inv.called += call
+                pri_inv.nav = pri_inv.nav * (1 + g) + call - dist
+                pri_inv.age += 1
+
+                # process the call
                 pool.bonds -= call
-
-                pool.private_investments[i].nav += (call - dist)
+                pool.bonds += dist
             end
         end
-        pool.distributed = dist
     end
     
     # calculate total wealth
@@ -136,7 +174,7 @@ function commit!(pool::investment_pool, amount::Float64)
 end
 
 
-actions_space = [
+action_space = [
     :do_nothing,
     :buy_stocks_5,
     :sell_stocks_5,
@@ -149,6 +187,14 @@ function generate(s::investment_pool, a, mp::market_parameters)
     # if a is 1, then do nothing, else
 
     s_prime = deepcopy(s)
+
+    if s_prime.time_step == s_prime.horizon
+        # println("End of horizon!")
+        r = s_prime.total_wealth  - 100
+        r = r - 100 * s_prime.max_drawdown
+        return s_prime, r
+    end
+
     if s_prime.is_bankrupt
         return s_prime, 0
     end
@@ -170,10 +216,6 @@ function generate(s::investment_pool, a, mp::market_parameters)
 
     step!(s_prime, mp)
 
-    # log
-    # push!(endowments, deepcopy(endowment))
-
-    # calculate reward
     r = s_prime.total_wealth - s.total_wealth
     if (s_prime.total_wealth < 0) || (s_prime.bonds < 0)
         s_prime.is_bankrupt = true
@@ -191,7 +233,8 @@ function generate(s::investment_pool, a, mp::market_parameters)
 end
 
 
-function run_one_path(model, S, π, mp, n_months=240)
+function run_one_path(model, S, π, mp)
+    n_months = S.horizon
     per_step_evolution = []
     push!(per_step_evolution, deepcopy(S))
 
@@ -204,11 +247,11 @@ function run_one_path(model, S, π, mp, n_months=240)
     return per_step_evolution
 end
 
-function run_many_paths(model, S, π, mp, n_paths=1000, n_months=240)
+function run_many_paths(model, S, π, mp, n_paths=1000)
     terminal_states = []
     for i in ProgressBar(1:n_paths)
         state = deepcopy(S)
-        state = run_one_path(model, state, π, mp, n_months)[end]
+        state = run_one_path(model, state, π, mp)[end]
         push!(terminal_states, deepcopy(state))
     end
     return terminal_states
@@ -276,18 +319,18 @@ function plot_one_path(one_path)
     total_wealths = [x.total_wealth for x in one_path]
     stocks = [x.stocks for x in one_path]
     bonds = [x.bonds for x in one_path]
-    total_spent = cumsum([x.spent for x in one_path])
-    total_distributed = cumsum([x.distributed for x in one_path])
+    total_spent = [x.spent for x in one_path]
     private_navs = [sum([x.nav for x in y.private_investments]) for y in one_path]
+    distrbutions = [sum([x.distributed for x in y.private_investments]) for y in one_path]
     uncalleds = [sum([x.committed - x.called for x in y.private_investments]) for y in one_path]
 
-    plot(total_wealths, label = "Total Wealth", title = "Investment Paths", xlabel = "Months", ylabel = "\$")
+    plot(total_wealths, label = "Total Wealth", title = "Single Path", xlabel = "Months", ylabel = "\$")
     plot!(stocks, label = "Stocks")
     plot!(bonds, label = "Bonds")
     plot!(private_navs, label = "Privates Total NAV")
     plot!(uncalleds, label = "Uncalled Capital") 
     plot!(total_spent, label = "Cumulative Spending")
-    plot!(total_distributed, label = "Cumulative Distributions")
+    plot!(distrbutions, label = "Cumulative Distributions")
 end
 
 
@@ -322,7 +365,6 @@ end
 
 
 
-
 #------------------------------------------------------------
 # Apply heuristic policy in simulation
 #------------------------------------------------------------
@@ -333,8 +375,8 @@ mp = market_parameters(
     0.03,   # bond return
     1.0,   # privates beta
     0.05,   # privates expected alpha
-    0.10,   # privates idiosyncratic volatility
-    0.0   # spending rate
+    0.05,   # privates idiosyncratic volatility
+    0.055   # spending rate
 )
 
 model = Heuristics(
@@ -343,30 +385,44 @@ model = Heuristics(
     0.25,   # max uncalled
     0.60,   # target equity net
     0.05,   # rebalance band
-    3,      # pacing months
+    6,      # pacing months
     0.05    # min cash
 )
 
+
+Random.seed!(17)
+
+
 S = investment_pool()
-one_path = run_one_path(model, S, π, mp, 240);
+one_path = run_one_path(model, S, π, mp);
 
 # plot one_path path and save to file
 plot_one_path(one_path)
 savefig("one_path.png")
 
-plot_private_investment(one_path, 3)
+plot_private_investment(one_path, 4)
+savefig("one_pi.png")
 
-paths = run_many_paths(model, S, π, mp, 100, 240);
 
-
+paths = run_many_paths(model, S, π, mp, 100);
 
 
 #------------------------------------------------------------
 # Summarize path results
 #------------------------------------------------------------
 
+avg_wealth = mean([x.total_wealth for x in paths])
+wealth_90 = quantile([x.total_wealth for x in paths], 0.9)
+wealth_10 = quantile([x.total_wealth for x in paths], 0.1)
+avg_max_drawdown = mean([x.max_drawdown for x in paths])
+avg_spent = mean([x.spent for x in paths])
 
+df = DataFrame(
+    metric = ["Average Wealth", "Wealth 90th Percentile", "Wealth 10th Percentile", "Average Max Drawdown", "Average Spent"],
+    baseline = [avg_wealth, wealth_90, wealth_10, avg_max_drawdown, avg_spent],
+)
 
+pretty_table(df, header=["Metric", "Baseline"])
 
 
 
@@ -426,6 +482,11 @@ function π(::GradientQLearning, s, exploration::EpsilonGreedyExploration)
 end
 
 
+#------------------------------------------------------------
+# Problem specific Gradient Q-learning
+#------------------------------------------------------------
+
+
 
 function basis(s, a)
     bias = [1.0]
@@ -447,7 +508,7 @@ alpha = 0.05
 lambda = 0.05
 
 model_gql = GradientQLearning(
-    1:n_actions,
+    action_space,
     0.95,
     Q_func,
     grad_Q_func,
