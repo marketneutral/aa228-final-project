@@ -1,3 +1,4 @@
+using LinearAlgebra
 using Plots
 using ProgressBars
 import Random
@@ -25,29 +26,6 @@ mutable struct private_investment
         new(committed, 0.0, 0.0, 0.0, 0, 144, 0.40, 2, true)
 end
 
-
-# function step!(pri_inv::private_investment, g)
-#     uncalled = pri_inv.committed - pri_inv.called
-#     if pri_inv.age == 0 || pri_inv.age % 11 == 0
-#         call = (pri_inv.rate_of_contrib) * uncalled
-#     else
-#         call = 0
-#     end
-#     #call = (pri_inv.rate_of_contrib/12) * uncalled
-#     rd = ((pri_inv.age-1)/(pri_inv.max_age))^pri_inv.bow
-#     dist = rd * (pri_inv.nav * (1 + g))
-#     pri_inv.distributed += dist
-
-#     pri_inv.called += call
-#     pri_inv.nav = pri_inv.nav * (1 + g) + call - dist
-#     pri_inv.age += 1
-# end
-
-# pri_inv = private_investment(100.)
-# for i in 1:144
-#     step!(pri_inv, 0.2/12)
-# end
-# pri_inv
 
 mutable struct investment_pool
     time_step::Int64
@@ -457,10 +435,11 @@ function update!(model::GradientQLearning, s, a, r, s_prime)
 end
 
 
-function simulate(model, π, h, s)
+function simulate(model, π, s, gen_func)
+    h = s.horizon
     for i in 1:h
         a = π(model, s)
-        s_prime, r = generate(s, a)
+        s_prime, r = gen_func(s, a)
         update!(model, s, a, r, s_prime)
         s = s_prime
     end
@@ -471,7 +450,7 @@ mutable struct EpsilonGreedyExploration
 end
 
 
-function π(::GradientQLearning, s, exploration::EpsilonGreedyExploration)
+function π(model::GradientQLearning, s, exploration::EpsilonGreedyExploration)
     A = model.A
     if rand() < exploration.epsilon
         return rand(A) # Explore: take a random action; constrain to valid actions
@@ -487,14 +466,50 @@ end
 #------------------------------------------------------------
 
 
+"""
+time_step::Int64
+horizon::Int64
+begin_wealth::Float64
+total_wealth::Float64
+bonds::Float64
+stocks::Float64
+private_investments::Array{private_investment,1}
+max_wealth::Float64
+max_drawdown::Float64
+is_bankrupt::Bool
+spent::Float64
+distributed::Float64
+"""
+
+
 
 function basis(s, a)
-    bias = [1.0]
-    state_features = [1.0] # [s.i, s.j, 5 - s.i, 5 - s.j, s.i*s.j, s.i^2, s.j^2]
-    action_features = [a == :up, a == :down, a == :left, a == :right]
+    bias = [1.0]  # do we need this?
+
+    # basic features
+    state_features = [
+        s.time_step/s.horizon,
+        (s.total_wealth/s.begin_wealth) - 1,
+        s.stocks/s.total_wealth,
+        s.bonds/s.total_wealth,
+        (s.total_wealth - s.stocks - s.bonds)/s.total_wealth,
+        s.max_drawdown
+    ]
+
+    # polynomial features
+    p2 = [s_f^2 for s_f in state_features]
+    p3 = [s_f^3 for s_f in state_features]
+    p4 = [s_f^4 for s_f in state_features]
+
+    state_features = vcat(state_features, p2, p3, p4)
+    
+    action_OHE_features = [a == action for action in action_space]
+
     # all combinations of state and action features
-    combs =  [s_f * a_f for s_f in state_features, a_f in action_features]
-    return vcat(bias, state_features, action_features, combs[:])
+    combs =  [s_f * a_f for s_f in state_features, a_f in action_OHE_features]
+
+    # 101 elements
+    return vcat(bias, action_OHE_features, combs[:])
 end
 
 
@@ -503,9 +518,9 @@ exploration = EpsilonGreedyExploration(0.1)
 Q_func(θ, s, a) = dot(θ, basis(s, a))
 grad_Q_func(θ, s, a) = basis(s, a)
 
-θ = 2 .* rand(39) .- 1
-alpha = 0.05
-lambda = 0.05
+θ = 2 .* rand(101) .- 1 ;
+alpha = 0.1
+lambda = 0.15
 
 model_gql = GradientQLearning(
     action_space,
@@ -517,3 +532,5 @@ model_gql = GradientQLearning(
     lambda
 )
 
+s = investment_pool()
+simulate(model_gql, (m, s) -> π(m, s, exploration), s, (s, a) -> generate(s, a, mp))
