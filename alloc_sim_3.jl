@@ -21,6 +21,7 @@ mutable struct investment_pool
     private_investments::Array{private_investment,1}
     max_wealth::Float64
     bankrupt::Bool
+    spent::Float64
     # Define a constructor with default values
     investment_pool() = new(100., 30, 70, private_investment[], 100, false)
 end
@@ -52,9 +53,7 @@ function step!(pool::investment_pool, mp::market_parameters)
 
     # Step the private investments forward
     if !isempty(pool.private_investments)
-        # reveresed so that we can splice out private investments
         for i in length(pool.private_investments):-1:1
-            # If the private investment is past its max age, remove it
             if pool.private_investments[i].age >= pool.private_investments[i].max_age
                 # distribute the remaining nav
                 pool.bonds += pool.private_investments[i].nav

@@ -207,11 +207,12 @@ end
 #basis(s, a) = [s.x, s.y, s.x*s.y, s.x^2, s.y^2, a == :up, a == :down, a == :left, a == :right]
 
 function basis(s, a)
+    bias = [1.0]
     state_features = [s.i, s.j, 5 - s.i, 5 - s.j, s.i*s.j, s.i^2, s.j^2]
     action_features = [a == :up, a == :down, a == :left, a == :right]
     # all combinations of state and action features
     combs =  [s_f * a_f for s_f in state_features, a_f in action_features]
-    return vcat(state_features, action_features, combs[:])
+    return vcat(bias, state_features, action_features, combs[:])
 end
 
 # s = GridWorldState(1, 1, false)
@@ -223,7 +224,7 @@ Q_func(θ, s, a) = dot(θ, basis(s, a))
 grad_Q_func(θ, s, a) = basis(s, a)
 
 # intialize the theta vector with unform random values between -1 and 1
-θ = 2 .* rand(39) .- 1
+θ = 2 .* rand(40) .- 1
 alpha = 0.05
 lambda = 0.05
 
@@ -234,11 +235,14 @@ simulate(gridworld, model_gql, (m, s) -> π(m, s, exploration), 100_000, s)
 #print_Q_table(model_gql)
 # print_grid(model_gql)
 
-
-function get_optimal_action(model, s)
+function get_optimal_action(model::GradientQLearning, s)
     state = GridWorldState(s[1], s[2], false)
     a = actions[argmax(model.Q(model.theta, state, a) for a in actions)]
     return a
+end
+
+for s in states
+    println(s, " ", get_optimal_action(model_gql, (s.i, s.j)))
 end
 
 # Vizualization
