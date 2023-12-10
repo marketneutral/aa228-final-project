@@ -203,7 +203,8 @@ function generate(s::investment_pool, a, mp::market_parameters)
 
     bonds_pct = s_prime.bonds / s_prime.total_wealth
     if bonds_pct < 0.20
-        r = r - (0.20 - bonds_pct) * 500_000
+        r = r -1_000*(100*(0.20 - bonds_pct))^2
+#        r = r - (0.20 - bonds_pct) * 1_000_000
 #        r = r - 100_000
     end
 
@@ -214,6 +215,7 @@ function generate(s::investment_pool, a, mp::market_parameters)
 
     return s_prime, r
 end
+
 
 
 function run_one_path(model, S, π, mp)
@@ -647,7 +649,7 @@ for i in ProgressBar(1:1_000)
     end
 end
 
-plot(rewards_lengths, legend=false, title = "Time Before Bankrupcy", xlabel = "Record", ylabel = "Reward")
+plot(rewards_lengths, legend=false, title = "Time Before Bankrupcy", xlabel = "Simulation", ylabel = "Reward")
 # write theta vector to file
 writedlm("theta.csv", model_gql.theta, ',')
 
