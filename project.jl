@@ -177,8 +177,6 @@ function generate(s::investment_pool, a, mp::market_parameters)
     # end of game! 
     if s_prime.time_step == s_prime.horizon
         r = r + s_prime.total_wealth - 100
-#        r = r - 100 * s_prime.max_drawdown
-        r = r + 1000
         return s_prime, r
     end
 
@@ -203,12 +201,14 @@ function generate(s::investment_pool, a, mp::market_parameters)
 
     r = r + (s_prime.total_wealth - s.total_wealth)
 
+    if s.bonds/s.total_wealth < 0.15
+        r = r - 100_000
+    end
+
     # add neg reward for being in a drawdown 
     current_drawdown = (s_prime.max_wealth - s_prime.total_wealth) / s_prime.max_wealth
     max_drawdown = max(s_prime.max_drawdown, current_drawdown)
     s_prime.max_drawdown = max_drawdown
-
-
 
     return s_prime, r
 end
@@ -224,6 +224,10 @@ function run_one_path(model, S, π, mp)
         S_prime, r = generate(S, a, mp)
         S = S_prime
         push!(per_step_evolution, deepcopy(S))
+        # check for Bankrupcy
+        if S_prime.is_bankrupt
+          break
+        end
     end
     return per_step_evolution
 end
@@ -284,8 +288,10 @@ function π(model::Heuristics, s)
     end
 
     if s.time_step % pacing_months == 0
-        if uncalled_pct < max_uncalled && bonds_pct > min_cash && privates_pct < max_privates
-            return :commit_5
+        if uncalled_pct < max_uncalled &&
+            bonds_pct > min_cash &&
+            privates_pct < max_privates
+                return :commit_5
         end
     end
 
@@ -343,51 +349,6 @@ function plot_private_investment(one_path, private_investment_index)
     plot!(distributions, label = "Distributions")
 end
 
-
-
-
-#------------------------------------------------------------
-# Apply heuristic policy in simulation
-#------------------------------------------------------------
-
-mp = market_parameters(
-    0.15,   # stock volatility
-    0.08,   # stock expected return
-    0.03,   # bond return
-    1.0,   # privates beta
-    0.05,   # privates expected alpha
-    0.05,   # privates idiosyncratic volatility
-    0.055   # spending rate
-)
-
-model = Heuristics(
-    0.25,   # max privates
-    0.70,   # max equity net
-    0.25,   # max uncalled
-    0.60,   # target equity net
-    0.05,   # rebalance band
-    6,      # pacing months
-    0.05    # min cash
-)
-
-
-Random.seed!(17)
-
-
-S = investment_pool()
-one_path = run_one_path(model, S, π, mp);
-
-# plot one_path path and save to file
-plot_one_path(one_path)
-savefig("one_path.png")
-
-plot_private_investment(one_path, 4)
-savefig("one_pi.png")
-
-
-paths = run_many_paths(model, S, π, mp, 100);
-
-
 #------------------------------------------------------------
 # Summarize path results
 #------------------------------------------------------------
@@ -398,16 +359,103 @@ function summarize_many_paths(paths)
     wealth_10 = quantile([x.total_wealth for x in paths], 0.1)
     avg_max_drawdown = mean([x.max_drawdown for x in paths])
     avg_spent = mean([x.spent for x in paths])
+    count_bankrupt = sum([x.is_bankrupt for x in paths])
+    n_sims = length(paths)
 
     df = DataFrame(
-        metric = ["Average Wealth", "Wealth 90th Percentile", "Wealth 10th Percentile", "Average Max Drawdown", "Average Spent"],
-        baseline = [avg_wealth, wealth_90, wealth_10, avg_max_drawdown, avg_spent],
+        metric = ["N Simulation", "Average Wealth", "Wealth 90th Percentile", "Wealth 10th Percentile", "Average Max Drawdown", "Average Spent", "Times Bankrupt"],
+        baseline = [n_sims, avg_wealth, wealth_90, wealth_10, avg_max_drawdown, avg_spent, count_bankrupt],
     )
 
     pretty_table(df, header=["Metric", "Baseline"])
 end
 
+
+
+
+#------------------------------------------------------------
+# Market parameters for all simulations
+#------------------------------------------------------------
+
+mp = market_parameters(
+    0.15,   # stock volatility
+    0.08,   # stock expected return
+    0.03,   # bond return
+    1.0,   # privates beta
+    0.025,   # privates expected alpha
+    0.05,   # privates idiosyncratic volatility
+    0.055   # spending rate
+)
+
+# make pretty table of the market_parameters
+df = DataFrame(
+    parameter = ["Stock Volatility", "Stock Expected Return", "Bond Return",  "Privates Expected Alpha", "Privates Idiosyncratic Volatility", "Spending Rate"],
+    value = [mp.stock_volatility, mp.stock_expected_return, mp.bond_return, mp.privates_expected_alpha, mp.privates_idiosyncratic_volatility, mp.spending_rate],
+)
+pretty_table(df, header=["Parameter", "Value"])
+
+#------------------------------------------------------------
+# Heuristic model, no privates
+#------------------------------------------------------------
+
+model = Heuristics(
+    0.00,   # max privates
+    0.75,   # max equity net
+    0.25,   # max uncalled
+    0.70,   # target equity net
+    0.05,   # rebalance band
+    99999,      # pacing months
+    0.05    # min cash
+)
+
+
+Random.seed!(42)
+
+
+S = investment_pool()
+one_path = run_one_path(model, S, π, mp);
+
+# plot one_path path and save to file
+plot_one_path(one_path)
+savefig("one_path.png")
+
+paths = run_many_paths(model, S, π, mp, 500);
 summarize_many_paths(paths)
+
+
+
+#------------------------------------------------------------
+# Heuristic model, with privates
+#------------------------------------------------------------
+
+model = Heuristics(
+    0.25,   # max privates
+    0.75,   # max equity net
+    0.25,   # max uncalled
+    0.70,   # target equity net
+    0.05,   # rebalance band
+    6,      # pacing months
+    0.05    # min cash
+)
+
+
+Random.seed!(42)
+
+S = investment_pool()
+one_path = run_one_path(model, S, π, mp);
+
+# plot one_path path and save to file
+plot_one_path(one_path)
+savefig("one_path.png")
+
+paths = run_many_paths(model, S, π, mp, 500);
+summarize_many_paths(paths)
+
+plot_private_investment(one_path, 4)
+savefig("one_pi.png")
+
+
+
 
 
 #------------------------------------------------------------
@@ -434,9 +482,10 @@ end
 function update!(model::GradientQLearning, s, a, r, s_prime)
     A, gamma, Q, theta, alpha, lambda = 
         model.A, model.gamma, model.Q, model.theta, model.alpha, model.lambda
-    u = maximum(Q(θ, s_prime, a_prime) for a_prime in A)
+    u_ = [Q(theta, s_prime, a_prime) for a_prime in A]
+    u = maximum(u_)
     Δ = (r + gamma*u - Q(theta, s, a)) * model.grad_Q(theta, s, a) - lambda*theta
-    theta[:] += alpha*scale_gradient(Δ, 1)
+    theta[:] += alpha*scale_gradient(Δ, 10)
     return model
 end
 
@@ -480,27 +529,21 @@ function π(model::GradientQLearning, s, exploration::EpsilonGreedyExploration)
 end
 
 
+function Q_func(θ, s, a)
+    q_val = dot(θ, basis(s, a))
+    if isnan(q_val)
+        println("NaN in Q_func!")
+        println("    $s")
+    end
+    return dot(θ, basis(s, a))
+end
+
+grad_Q_func(θ, s, a) = basis(s, a)
+
+
 #------------------------------------------------------------
 # Problem specific Gradient Q-learning
 #------------------------------------------------------------
-
-
-"""
-time_step::Int64
-horizon::Int64
-begin_wealth::Float64
-total_wealth::Float64
-bonds::Float64
-stocks::Float64
-private_investments::Array{private_investment,1}
-total_uncalled::Float64
-max_wealth::Float64
-max_drawdown::Float64
-is_bankrupt::Bool
-spent::Float64
-distributed::Float64
-"""
-
 
 action_space = [
     :do_nothing,
@@ -511,21 +554,21 @@ action_space = [
 
 
 function basis(s, a)
-    # basic features
-
-    # Applying the cosine transformation to capture periodicity
     cosine_transform = cos((2.0 * pi / 12) * (s.time_step .- 12))
     sin_transform = sin((2.0 * pi / 12) * (s.time_step .- 12))
 
-    bonds_pct = s.bonds / s.total_wealth
+    total_wealth = s.total_wealth + 1e-6
+    bonds = max(s.bonds, 1e-6)
+
+    bonds_pct = bonds / total_wealth
 
     state_features = [
-        (s.total_wealth/s.begin_wealth) - 1,
-        s.stocks/s.total_wealth,
+        (total_wealth/s.begin_wealth) - 1,
+        s.stocks/total_wealth,
         bonds_pct,
-        s.total_uncalled/s.total_wealth,
-        s.total_uncalled/s.bonds,
-        (s.total_wealth - s.stocks - s.bonds)/s.total_wealth,
+        s.total_uncalled/total_wealth,
+        s.total_uncalled/bonds,
+        (total_wealth - s.stocks - bonds)/total_wealth,
         s.max_drawdown,
         cosine_transform,
         sin_transform,
@@ -543,16 +586,23 @@ function basis(s, a)
     # all combinations of state and action features
     combs =  [s_f * a_f for s_f in state_features, a_f in action_OHE_features]
 
-    return vcat(action_OHE_features, combs[:])
+    feature_vector = vcat(action_OHE_features, combs[:])
+
+    # if the feature vector contains any NaNs, return a vector of zeros
+    if any(isnan.(feature_vector))
+       println("NaNs in feature vector!")
+    end
+
+    return feature_vector
 end
 
 
-Q_func(θ, s, a) = dot(θ, basis(s, a))
-grad_Q_func(θ, s, a) = basis(s, a)
 
 s = investment_pool()
 bf = basis(s, :do_nothing);
 n_features = length(bf)
+
+Random.seed!(42)
 
 θ = 2 .* (rand(n_features) .- 0.5);
 alpha = 0.01
@@ -567,7 +617,7 @@ model_gql = GradientQLearning(
     θ,
     alpha,
     lambda
-)
+);
 
 exploration = EpsilonGreedyExploration(0.2)
 
@@ -580,8 +630,8 @@ plot(rewards, label = "Reward", title = "Single Path", xlabel = "Months", ylabel
 terminal_states = []
 rewards_lengths = []
 thetas = []
-push!(thetas, deepcopy(model_gql.theta))
-for i in ProgressBar(1:10_000)
+push!(thetas, deepcopy(model_gql.theta));
+for i in ProgressBar(1:1_000)
     s = investment_pool()
     one_path, rewards = simulate(model_gql, (m, s) -> π(m, s, exploration), s, (s, a) -> generate(s, a, mp));
     if i % 250 == 0
