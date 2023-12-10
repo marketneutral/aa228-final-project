@@ -204,8 +204,6 @@ function generate(s::investment_pool, a, mp::market_parameters)
     bonds_pct = s_prime.bonds / s_prime.total_wealth
     if bonds_pct < 0.20
         r = r -1_000*(100*(0.20 - bonds_pct))^2
-#        r = r - (0.20 - bonds_pct) * 1_000_000
-#        r = r - 100_000
     end
 
     # add neg reward for being in a drawdown 
@@ -216,6 +214,12 @@ function generate(s::investment_pool, a, mp::market_parameters)
     return s_prime, r
 end
 
+function b(bonds_pct)
+    return -1_000*(100*(0.20 .- bonds_pct)).^2
+end
+p = plot(b(0.0:0.01:0.20), legend=false, title = "Bond Penalty", xlabel = "Bonds %", ylabel = "Reward")
+xflip!()
+display(p)
 
 
 function run_one_path(model, S, π, mp)
@@ -542,6 +546,11 @@ function Q_func(θ, s, a)
     return dot(θ, basis(s, a))
 end
 
+function Q_func(θ, s, a)
+    return dot(θ, basis(s, a))
+end
+
+
 grad_Q_func(θ, s, a) = basis(s, a)
 
 
@@ -611,11 +620,20 @@ Random.seed!(42)
 θ = 2 .* (rand(n_features) .- 0.5);
 alpha = 0.01
 lambda = 0.1
+gamma = 0.999
+n_sims = 1_000 
+epsilon = 0.20
 
+# make pretty parameter table
+df = DataFrame(
+    parameter = ["Number of Features", "Learning Rate", "Regularization", "Discount Rate", "Number of Simulations", "Epsilon"],
+    value = [n_features, alpha, lambda, gamma, n_sims, epsilon],
+)
+pretty_table(df, header=["Parameter", "Value"])
 
 model_gql = GradientQLearning(
     action_space,
-    0.999,
+    gamma,
     Q_func,
     grad_Q_func,
     θ,
@@ -623,7 +641,17 @@ model_gql = GradientQLearning(
     lambda
 );
 
-exploration = EpsilonGreedyExploration(0.2)
+exploration = EpsilonGreedyExploration(epsilon)
+
+# make a random agent
+S = investment_pool()
+greedy = EpsilonGreedyExploration(0.0)
+path = run_one_path(model_gql, S, (m, s) -> π(m, s, greedy), mp);
+plot_one_path(path)
+savefig("q_random_path.png")
+plot(rewards, label = "Reward", title = "Single Path", xlabel = "Months", ylabel = "Reward")
+savefig("q_random_rewards.png")
+
 
 s = investment_pool()
 one_path_gql, rewards = simulate(model_gql, (m, s) -> π(m, s, exploration), s, (s, a) -> generate(s, a, mp));
@@ -635,16 +663,16 @@ terminal_states = []
 rewards_lengths = []
 thetas = []
 push!(thetas, deepcopy(model_gql.theta));
-for i in ProgressBar(1:1_000)
+for i in ProgressBar(1:n_sims)
     s = investment_pool()
     one_path, rewards = simulate(model_gql, (m, s) -> π(m, s, exploration), s, (s, a) -> generate(s, a, mp));
     if i % 250 == 0
         push!(terminal_states, deepcopy(one_path[end]))
         push!(rewards_lengths, length(rewards))    
-    end
-    if i % 2500 == 0
-        # save checkpoint
         writedlm("theta_checkpoint_$i.csv", model_gql.theta, ',')
+    end
+    if i % 25 == 0
+        # save checkpoint
         push!(thetas, deepcopy(model_gql.theta))
     end
 end
@@ -665,6 +693,7 @@ S = investment_pool()
 greedy = EpsilonGreedyExploration(0.0)
 path = run_one_path(model_gql, S, (m, s) -> π(m, s, greedy), mp);
 plot_one_path(path)
+savefig("q_star_path.png")
 
 s = path[8];
 Q_values = Dict(a => lookahead(model_gql, s, a) for a in action_space)
