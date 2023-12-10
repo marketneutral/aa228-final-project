@@ -201,8 +201,10 @@ function generate(s::investment_pool, a, mp::market_parameters)
 
     r = r + (s_prime.total_wealth - s.total_wealth)
 
-    if s.bonds/s.total_wealth < 0.15
-        r = r - 100_000
+    bonds_pct = s_prime.bonds / s_prime.total_wealth
+    if bonds_pct < 0.20
+        r = r - (0.20 - bonds_pct) * 500_000
+#        r = r - 100_000
     end
 
     # add neg reward for being in a drawdown 
