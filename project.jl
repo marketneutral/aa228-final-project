@@ -163,12 +163,22 @@ function generate(s::investment_pool, a, mp::market_parameters)
     # process action
     # if a is 1, then do nothing, else
 
+    r = -1
     s_prime = deepcopy(s)
+
+    step!(s_prime, mp)
+
+    if (s_prime.total_wealth < 0) || (s_prime.bonds < 0)
+        s_prime.is_bankrupt = true
+        r = r - 1_000_000
+        return s_prime, r
+    end
 
     # end of game! 
     if s_prime.time_step == s_prime.horizon
-        r = s_prime.total_wealth - 100
-        r = r - 100 * s_prime.max_drawdown
+        r = r + s_prime.total_wealth - 100
+#        r = r - 100 * s_prime.max_drawdown
+        r = r + 1000
         return s_prime, r
     end
 
@@ -191,21 +201,14 @@ function generate(s::investment_pool, a, mp::market_parameters)
         commit!(s_prime, commitment_size)
     end
 
-    step!(s_prime, mp)
-
-    r = s_prime.total_wealth - s.total_wealth
-
-    if (s_prime.total_wealth < 0) || (s_prime.bonds < 0)
-        s_prime.is_bankrupt = true
-        r = r - 100_000
-        return s_prime, r
-    end
+    r = r + (s_prime.total_wealth - s.total_wealth)
 
     # add neg reward for being in a drawdown 
     current_drawdown = (s_prime.max_wealth - s_prime.total_wealth) / s_prime.max_wealth
     max_drawdown = max(s_prime.max_drawdown, current_drawdown)
     s_prime.max_drawdown = max_drawdown
-    r = r + s_prime.total_wealth  - s.total_wealth
+
+
 
     return s_prime, r
 end
@@ -348,7 +351,7 @@ end
 #------------------------------------------------------------
 
 mp = market_parameters(
-    0.17,   # stock volatility
+    0.15,   # stock volatility
     0.08,   # stock expected return
     0.03,   # bond return
     1.0,   # privates beta
@@ -503,7 +506,7 @@ action_space = [
     :do_nothing,
     :buy_stocks_5,
     :sell_stocks_5,
-#    :commit_5,
+    :commit_5,
 ]
 
 
@@ -553,7 +556,7 @@ n_features = length(bf)
 
 θ = 2 .* (rand(n_features) .- 0.5);
 alpha = 0.01
-lambda = 0.05
+lambda = 0.1
 
 
 model_gql = GradientQLearning(
@@ -609,5 +612,9 @@ greedy = EpsilonGreedyExploration(0.0)
 path = run_one_path(model_gql, S, (m, s) -> π(m, s, greedy), mp);
 plot_one_path(path)
 
+s = path[8];
+Q_values = Dict(a => lookahead(model_gql, s, a) for a in action_space)
+
 paths = run_many_paths(model_gql, S, (m, s) -> π(m, s, greedy), mp, 500);
 summarize_many_paths(paths)
+writedlm("theta.csv", model_gql.theta, ',')
