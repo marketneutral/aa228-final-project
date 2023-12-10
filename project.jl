@@ -552,7 +552,7 @@ bf = basis(s, :do_nothing);
 n_features = length(bf)
 
 θ = 2 .* (rand(n_features) .- 0.5);
-alpha = 0.1
+alpha = 0.01
 lambda = 0.05
 
 
