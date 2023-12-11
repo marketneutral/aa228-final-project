@@ -160,8 +160,6 @@ end
 
 
 function generate(s::investment_pool, a, mp::market_parameters)
-    # process action
-    # if a is 1, then do nothing, else
 
     r = -1
     s_prime = deepcopy(s)
@@ -214,6 +212,7 @@ function generate(s::investment_pool, a, mp::market_parameters)
     return s_prime, r
 end
 
+# for presentation, show plot of the reward shaping
 function b(bonds_pct)
     return -1_000*(100*(0.20 .- bonds_pct)).^2
 end
@@ -380,7 +379,6 @@ end
 
 
 
-
 #------------------------------------------------------------
 # Market parameters for all simulations
 #------------------------------------------------------------
@@ -402,6 +400,7 @@ df = DataFrame(
 )
 pretty_table(df, header=["Parameter", "Value"])
 
+
 #------------------------------------------------------------
 # Heuristic model, no privates
 #------------------------------------------------------------
@@ -419,7 +418,6 @@ model = Heuristics(
 
 Random.seed!(42)
 
-
 S = investment_pool()
 one_path = run_one_path(model, S, π, mp);
 
@@ -429,7 +427,6 @@ savefig("one_path.png")
 
 paths = run_many_paths(model, S, π, mp, 500);
 summarize_many_paths(paths)
-
 
 
 #------------------------------------------------------------
@@ -461,9 +458,6 @@ summarize_many_paths(paths)
 
 plot_private_investment(one_path, 4)
 savefig("one_pi.png")
-
-
-
 
 
 #------------------------------------------------------------
@@ -518,8 +512,6 @@ function simulate(model, π, s, gen_func)
 end
 
 
-
-
 mutable struct EpsilonGreedyExploration
     epsilon # probability of random action
 end
@@ -549,7 +541,6 @@ end
 function Q_func(θ, s, a)
     return dot(θ, basis(s, a))
 end
-
 
 grad_Q_func(θ, s, a) = basis(s, a)
 
@@ -601,14 +592,12 @@ function basis(s, a)
 
     feature_vector = vcat(action_OHE_features, combs[:])
 
-    # if the feature vector contains any NaNs, return a vector of zeros
     if any(isnan.(feature_vector))
        println("NaNs in feature vector!")
     end
 
     return feature_vector
 end
-
 
 
 s = investment_pool()
